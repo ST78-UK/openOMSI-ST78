@@ -705,6 +705,67 @@ impl PluginIo for Io<'_> {
     fn traffic_buses(&self) -> Vec<op::AiBus> {
         self.app().map(pduty::ai_buses).unwrap_or_default()
     }
+
+    // --- the fleet (omsi.fleet) ---
+    fn fleet_catalog(&mut self) -> Vec<op::FleetVehicle> {
+        let Some(app) = self.app_mut() else { return Vec::new() };
+        app.ensure_vehicle_list();
+        app.menus
+            .vehicle_list
+            .iter()
+            .map(|(name, file)| {
+                let (manufacturer, model) = app.menus.vehicle_meta.get(file).cloned().unwrap_or_default();
+                op::FleetVehicle { file: file.clone(), name: name.clone(), manufacturer, model }
+            })
+            .collect()
+    }
+    fn fleet_place(&mut self, file: &str, paint: Option<&str>, swap: bool) -> Result<(), String> {
+        let app = self.app_mut().ok_or("no game")?;
+        app.ensure_vehicle_list();
+        if !app.menus.vehicle_list.iter().any(|v| v.1 == file) {
+            return Err(format!("{file} is not an installed vehicle (see omsi.fleet.catalog)"));
+        }
+        if app.menus.pending_placement.is_some() {
+            return Err("a vehicle is still loading".into());
+        }
+        if app.net.lan.as_ref().is_some_and(|l| l.role == omsi_net::Role::Client) {
+            return Err("in a LAN session only the host places vehicles".into());
+        }
+        app.menus.swap_pending = swap && app.player.is_some();
+        app.place_vehicle(file, paint.map(str::to_string), None);
+        if app.menus.pending_placement.is_some() {
+            Ok(())
+        } else {
+            app.menus.swap_pending = false;
+            Err("the game could not start loading the vehicle".into())
+        }
+    }
+    fn fleet_busy(&self) -> bool {
+        self.app().is_some_and(|a| a.menus.pending_placement.is_some())
+    }
+    fn fleet_assign(&mut self, line: &str, tour: &str, file: &str, number: &str, paint: Option<&str>) -> Result<(), String> {
+        let app = self.app_mut().ok_or("no game")?;
+        app.ensure_vehicle_list();
+        if !app.menus.vehicle_list.iter().any(|v| v.1 == file) {
+            return Err(format!("{file} is not an installed vehicle (see omsi.fleet.catalog)"));
+        }
+        if !pduty::lines(app).iter().any(|l| l.name == line.trim() && l.tours.iter().any(|t| t.number == tour.trim())) {
+            return Err(format!("the timetable has no line {line}, tour {tour}"));
+        }
+        let Some(schedule) = app.session.schedule.as_mut() else {
+            return Err("the timetable's buses are off on this map".into());
+        };
+        schedule.sim.set_company_bus(line, tour, file, number, paint);
+        Ok(())
+    }
+    fn fleet_unassign(&mut self, line: &str, tour: &str) -> bool {
+        let Some(app) = self.app_mut() else { return false };
+        app.session.schedule.as_mut().is_some_and(|s| s.sim.clear_company_bus(line, tour))
+    }
+    fn fleet_assignments(&self) -> Vec<op::FleetAssignment> {
+        let Some(s) = self.app().and_then(|a| a.session.schedule.as_ref()) else { return Vec::new() };
+        s.sim.company_buses().into_iter().map(|(line, tour, file, number)| op::FleetAssignment { line, tour, file, number }).collect()
+    }
     fn traffic_light_ahead(&self, reach: f64) -> Option<op::Light> {
         pbus::light_ahead(self.app()?, reach)
     }

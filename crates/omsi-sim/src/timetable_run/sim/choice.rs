@@ -6,6 +6,9 @@ use super::*;
 impl ScheduleSim {
     /// The vehicle departure `i` is driven with (see [`Choice`]).
     pub fn choose(&mut self, i: usize, world: &dyn TimetableWorld) -> Option<Choice> {
+        if let Some(c) = self.company_choice(i, world) {
+            return Some(c);
+        }
         let group = self.departures[i].ai_group.to_ascii_lowercase();
         let key = self.tour_key(i);
         // the draw: the tour mixed with the session (#2250); `key` names the tour's choice
@@ -112,6 +115,72 @@ impl ScheduleSim {
             scheme,
             train,
         })
+    }
+
+    /// Gives line `line`, tour `tour` a vehicle of its own: from the tour's next departure on
+    /// its buses are `file` (see `omsi.fleet.assign`). A bus on the road keeps running.
+    pub fn set_company_bus(&mut self, line: &str, tour: &str, file: &str, number: &str, paint: Option<&str>) {
+        let key = (line.trim().to_ascii_lowercase(), tour.trim().to_ascii_lowercase());
+        self.company.insert(
+            key,
+            CompanyBus { file: file.to_string(), number: number.trim().to_string(), paint: paint.map(str::to_string), ty: None, failed: false },
+        );
+    }
+
+    /// Takes the tour's own vehicle back; whether it had one.
+    pub fn clear_company_bus(&mut self, line: &str, tour: &str) -> bool {
+        let key = (line.trim().to_ascii_lowercase(), tour.trim().to_ascii_lowercase());
+        self.company.remove(&key).is_some()
+    }
+
+    /// The tours with a vehicle of their own: (line, tour, file, fleet number).
+    pub fn company_buses(&self) -> Vec<(String, String, String, String)> {
+        let mut v: Vec<_> = self.company.iter().map(|((l, t), c)| (l.clone(), t.clone(), c.file.clone(), c.number.clone())).collect();
+        v.sort();
+        v
+    }
+
+    /// Whether the tour has a vehicle of its own and the file is not one the timetable can
+    /// run (a failed read): the departure then runs with the group's vehicles as before.
+    fn company_choice(&mut self, i: usize, world: &dyn TimetableWorld) -> Option<Choice> {
+        if self.company.is_empty() {
+            return None;
+        }
+        let d = &self.departures[i];
+        let key = (d.line.trim().to_ascii_lowercase(), d.tour.trim().to_ascii_lowercase());
+        let root = world.root().to_path_buf();
+        let c = self.company.get_mut(&key)?;
+        if c.failed {
+            return None;
+        }
+        if c.ty.is_none() {
+            let path = omsi_cfg::resolve_path(&root, &c.file);
+            match VehicleType::load_ai(&root, &path) {
+                Ok(t) => c.ty = Some(Arc::new(t)),
+                Err(e) => {
+                    log::warn!("company bus {} for line {} tour {}: {e}", c.file, key.0, key.1);
+                    c.failed = true;
+                    return None;
+                }
+            }
+        }
+        let ty = c.ty.clone()?;
+        let (number_text, paint) = (c.number.clone(), c.paint.clone());
+        let number = (!number_text.is_empty()).then(|| {
+            let plate = if ty.def.registration_mode != 1 { ty.def.plate_of_number(&number_text) } else { String::new() };
+            (number_text, plate)
+        });
+        // the livery asked for, else (as a depot bus does) the model's own paint: the first
+        // repaint when its default paint is "<nouse>"
+        let scheme = if ty.paint_schemes.is_empty() {
+            None
+        } else {
+            paint
+                .and_then(|p| ty.paint_schemes.iter().position(|s| s.name.trim_end() == p.trim_end()))
+                .or_else(|| (ty.def.default_paint.trim() == "<nouse>").then_some(0))
+        };
+        let hof = self.pool_hof(ty.def.dir(), world);
+        Some(Choice { ty, number, hof, scheme, train: None })
     }
 
     /// The departures of the trips on the road at `day_time` and of those leaving in the

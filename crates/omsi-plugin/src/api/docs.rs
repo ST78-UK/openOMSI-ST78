@@ -10,6 +10,7 @@ pub const GROUPS: &[(&str, &str)] = &[
     ("duty", "Duty and timetable"),
     ("map", "The map"),
     ("traffic", "AI traffic"),
+    ("fleet", "Fleet and company tours"),
     ("people", "People"),
     ("time", "Time"),
     ("weather", "Weather"),

@@ -38,6 +38,11 @@ pub struct Game {
     pub lan_sent: Vec<(String, u32, String)>,
     /// The passengers of the frame who decided about their ticket.
     pub ticket_asks: Vec<TicketAsk>,
+    /// The installed vehicles (`omsi.fleet.catalog`), a vehicle being placed, and the tours
+    /// with a vehicle of their own: (line, tour, file, number).
+    pub fleet: Vec<FleetVehicle>,
+    pub placing: bool,
+    pub company: Vec<(String, String, String, String)>,
 }
 
 impl Game {
@@ -259,6 +264,39 @@ impl PluginIo for Game {
     fn traffic_set_density(&mut self, cars: Option<usize>, share: Option<f32>) -> bool {
         self.did(format!("density {cars:?} {share:?}"));
         true
+    }
+    fn fleet_catalog(&mut self) -> Vec<FleetVehicle> {
+        self.fleet.clone()
+    }
+    fn fleet_place(&mut self, file: &str, paint: Option<&str>, swap: bool) -> Result<(), String> {
+        if !self.fleet.iter().any(|v| v.file == file) {
+            return Err(format!("{file} is not installed"));
+        }
+        if self.placing {
+            return Err("a vehicle is still loading".into());
+        }
+        self.placing = true;
+        self.did(format!("place {file} {} {swap}", paint.unwrap_or("-")));
+        Ok(())
+    }
+    fn fleet_busy(&self) -> bool {
+        self.placing
+    }
+    fn fleet_assign(&mut self, line: &str, tour: &str, file: &str, number: &str, _paint: Option<&str>) -> Result<(), String> {
+        if line != "136" {
+            return Err(format!("the timetable has no line {line}"));
+        }
+        self.company.retain(|c| !(c.0 == line && c.1 == tour));
+        self.company.push((line.into(), tour.into(), file.into(), number.into()));
+        Ok(())
+    }
+    fn fleet_unassign(&mut self, line: &str, tour: &str) -> bool {
+        let n = self.company.len();
+        self.company.retain(|c| !(c.0 == line && c.1 == tour));
+        n != self.company.len()
+    }
+    fn fleet_assignments(&self) -> Vec<FleetAssignment> {
+        self.company.iter().map(|(line, tour, file, number)| FleetAssignment { line: line.clone(), tour: tour.clone(), file: file.clone(), number: number.clone() }).collect()
     }
     fn traffic_remove(&mut self, id: u64) -> bool {
         let n = self.cars.len();

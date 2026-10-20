@@ -224,6 +224,25 @@ pub struct ScheduleSim {
     /// one, `set_lan_seed`). Hashing the tour alone sent the same bus out on it every time
     /// (#2250). 0 (tests, tools): always the same.
     pub vehicle_seed: u64,
+    /// Tours a plugin gave a vehicle of its own (`omsi.fleet.assign`: the bus-company
+    /// add-on's fleet), by (line, tour) in lower case. They run with it instead of the
+    /// AI group's vehicles, from their next departure on.
+    company: HashMap<(String, String), CompanyBus>,
+}
+
+/// A vehicle a plugin chose for a tour (see [`ScheduleSim::set_company_bus`]).
+pub struct CompanyBus {
+    /// The vehicle file as the plugin gave it.
+    pub file: String,
+    /// The fleet number the bus shows ("" for the vehicle's own).
+    pub number: String,
+    /// A livery's name (None: the first of the vehicle's repaints, as a depot bus without
+    /// a line of its own gets, or at random).
+    pub paint: Option<String>,
+    /// Read the first time the tour's departure asks for it; None after a failed read
+    /// (`failed`, not tried again until the plugin assigns anew).
+    ty: Option<Arc<VehicleType>>,
+    failed: bool,
 }
 
 /// A tour's bus waits at the end of a trip for the next one of its tour when that leaves

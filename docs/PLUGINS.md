@@ -422,6 +422,7 @@ Complete plugins to start from (each runs in the tests against a stand-in game):
 | [`passenger_log.lua`](examples/plugins/passenger_log.lua) | every passenger boarding the bus in `game.log`: age, boarding stop and destination, the ticket they will ask for (`passenger_ticket`, `people.get`) |
 | [`reduced_tickets.lua`](examples/plugins/reduced_tickets.lua) | every adult asks for the reduced fare instead of the full one (`passenger_ticket`, `people.set_ticket`) |
 | [`weather_controller.lua`](examples/plugins/weather_controller.lua) | the weather files as tabs, sliders for temperature, visibility and rain, snow cover, the clock moved by buttons, and a day cycle of its own |
+| [Bus Company Simulator](../addons/bus-company/README.md) | a whole game as a plugin: buy buses, hire AI drivers, run the timetable's tours for money, loans and tax; uses `omsi.fleet` |
 
 ### Safety and errors
 

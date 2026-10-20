@@ -262,6 +262,35 @@ pub trait PluginIo {
     fn traffic_buses(&self) -> Vec<AiBus> {
         Vec::new()
     }
+    // --- the fleet: the vehicles installed, and which the timetable's AI runs ------------
+    /// The vehicles installed, as the game menu's vehicle list offers them (`omsi.fleet.catalog`).
+    fn fleet_catalog(&mut self) -> Vec<FleetVehicle> {
+        Vec::new()
+    }
+    /// Gets the player into the vehicle `file` (a path of [`PluginIo::fleet_catalog`]), in the
+    /// place of the one driven when `swap` (else beside it), in the livery `paint` (None: at
+    /// random). The vehicle is read on a worker: it is in the world some frames later
+    /// (the `vehicle` event), and [`PluginIo::fleet_busy`] says so meanwhile.
+    fn fleet_place(&mut self, _file: &str, _paint: Option<&str>, _swap: bool) -> Result<(), String> {
+        Err("this game cannot place vehicles".into())
+    }
+    /// Whether a vehicle is still being read for `fleet_place`.
+    fn fleet_busy(&self) -> bool {
+        false
+    }
+    /// From the tour's next departure on, the timetable's AI runs line `line`, tour `tour` with
+    /// the vehicle `file` (fleet number `number`, livery `paint`) instead of the map's own.
+    fn fleet_assign(&mut self, _line: &str, _tour: &str, _file: &str, _number: &str, _paint: Option<&str>) -> Result<(), String> {
+        Err("this game has no timetable to assign vehicles to".into())
+    }
+    /// Takes the assignment back (the map's own vehicles again); whether there was one.
+    fn fleet_unassign(&mut self, _line: &str, _tour: &str) -> bool {
+        false
+    }
+    /// The tours that have an assignment.
+    fn fleet_assignments(&self) -> Vec<FleetAssignment> {
+        Vec::new()
+    }
     /// The traffic light the player's bus comes to within `reach` m.
     fn traffic_light_ahead(&self, _reach: f64) -> Option<Light> {
         None
@@ -619,6 +648,27 @@ pub struct AiBus {
     pub delay: f64,
     pub x: f64,
     pub y: f64,
+    pub number: String,
+}
+
+/// A vehicle the game has installed (`omsi.fleet.catalog`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FleetVehicle {
+    /// The vehicle file as the game's lists name it (relative to its content folder).
+    pub file: String,
+    /// The name the game menu shows.
+    pub name: String,
+    pub manufacturer: String,
+    /// The type, as the vehicle's `[friendlyname]` gives it.
+    pub model: String,
+}
+
+/// A tour the timetable runs with a vehicle a plugin chose (`omsi.fleet.assignments`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FleetAssignment {
+    pub line: String,
+    pub tour: String,
+    pub file: String,
     pub number: String,
 }
 

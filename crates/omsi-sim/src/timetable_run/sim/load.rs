@@ -270,6 +270,7 @@ impl ScheduleSim {
             tour_vehicle: HashMap::new(),
             used_numbers: HashSet::new(),
             vehicle_seed: omsi_script::session_seed().map(|s| omsi_script::mix_seed(s ^ 0x746f_7572_5f62_7573)).unwrap_or(0),
+            company: HashMap::new(),
         };
         s.yesterday_bits = s.yesterday_bits();
         s.assign_car_use();
