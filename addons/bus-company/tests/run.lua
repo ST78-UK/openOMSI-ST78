@@ -3,7 +3,7 @@
 -- Exit status 0: everything passed.
 
 local here = (arg and arg[0] or "tests/run.lua"):match("^(.*)[/\\]tests[/\\][^/\\]*$") or "."
-local plugin_dir = here .. "/plugins/bus_company/"
+local plugin_dir = here .. "/plugins/OO-BusCo-ST1/"
 package.path = plugin_dir .. "?.lua;" .. here .. "/tests/?.lua;" .. package.path
 
 local mock = require("mock_omsi")

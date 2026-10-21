@@ -4,13 +4,13 @@ An add-on for openOMSI: found a company on any map, buy buses from the ones you 
 installed, hire AI drivers, take over the map's timetable tours and run them - with AI drivers
 or by driving them yourself - and keep the books in the black.
 
-It is a Lua plugin (`plugins/bus_company/`) on top of a small engine addition, the
+It is a Lua plugin (`plugins/OO-BusCo-ST1/`) on top of a small engine addition, the
 `omsi.fleet` API (see [Engine changes](#engine-changes)).
 
 ## Install
 
-Copy the folder `plugins/bus_company` into the `plugins` folder of your openOMSI game (so that
-`plugins/bus_company/main.lua` exists) and start a map with a bus. **Ctrl+B** shows and hides
+Copy the folder `plugins/OO-BusCo-ST1` into the `plugins` folder of your openOMSI game (so that
+`plugins/OO-BusCo-ST1/main.lua` exists) and start a map with a bus. **Ctrl+B** shows and hides
 the company window; **Ctrl+L** opens it on the Livery tab; **F10** gives it the mouse (its buttons also answer a plain click). The
 plugin settings (currency, difficulty, economy pace, starting cash, ...) are under *Finance →
 Settings*.
@@ -88,7 +88,7 @@ your service, and moves demand by up to +-25 %.
 
 **Economy pace** (default 8): one day of play earns and costs this many days of realistic
 money, since a game day is an hour or two of play at a sped-up clock. Fines and crash costs
-grow with it, but more slowly. `plugins/bus_company/balance.lua` holds every other number.
+grow with it, but more slowly. `plugins/OO-BusCo-ST1/balance.lua` holds every other number.
 
 **Liveries.** The Livery tab lists the liveries (paint schemes) of the bus you sit in; a click
 puts it on at once: the game reads the bus again and puts it where it stands (so speed, doors
