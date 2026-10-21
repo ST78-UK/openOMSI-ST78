@@ -13,7 +13,7 @@ local R = require("routes")
 local G = require("game")
 local V = require("views")
 
-local VERSION = "1.0.0"
+local VERSION = require("version").number
 
 local settings = omsi.plugin.settings({
   { key = "company_name", type = "text", label = "Company name (new company)", default = "Bus Company" },

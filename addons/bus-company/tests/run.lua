@@ -19,7 +19,7 @@ end
 local function near(a, b, eps) return math.abs(a - b) <= (eps or 1e-6) end
 local function section(s) print("== " .. s) end
 
-local MODULES = { "util", "balance", "catalog", "company", "fleet", "drivers", "routes", "game", "views" }
+local MODULES = { "version", "util", "balance", "catalog", "company", "fleet", "drivers", "routes", "game", "views" }
 
 local CATALOG = {
   { file = "Vehicles/MAN_SD202/MAN_SD202.bus", name = "MAN SD202", manufacturer = "MAN", model = "SD202" },
@@ -119,6 +119,20 @@ do
   check("starting cash", S.cash == 400000, S.cash)
   check("candidates exist", #S.candidates >= 6, #S.candidates)
   check("a panel is shown", g.panels.bc ~= nil)
+  local function find_text(list, pat)
+    for _, e in ipairs(list) do
+      if e.text and tostring(e.text):find(pat) then return true end
+      if e.children and find_text(e.children, pat) then return true end
+    end
+    return false
+  end
+  local ver = P.version.number
+  check("the version is x.y.z", ver:match("^%d+%.%d+%.%d+$") ~= nil, ver)
+  check("the window shows the version", find_text(g.panels.bc.children, "^v" .. ver:gsub("%.", "%%.") .. "$"))
+  P.views.change("tab", 6)
+  check("the Finance tab shows it too", find_text(P.views.panel().children, "version " .. ver:gsub("%.", "%%.")))
+  P.views.change("tab", 1)
+  check("the log names it", (function() for _, l in ipairs(g.log) do if l:find("Bus Company " .. ver:gsub("%.", "%%.")) then return true end end return false end)())
   check("fleet file only .bus", (function() for _, m in ipairs(P.game.models_list()) do if not m.file:match("%.bus$") then return false end end return true end)())
   check("catalogue drops tram and trailer", #P.game.models_list() == 5, #P.game.models_list())
   check("vehicles.json written", g.files["vehicles.json"] ~= nil)

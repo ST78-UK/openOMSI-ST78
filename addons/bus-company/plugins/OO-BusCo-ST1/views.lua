@@ -10,6 +10,7 @@ local F = require("fleet")
 local D = require("drivers")
 local R = require("routes")
 local G = require("game")
+local VERSION = require("version").number
 
 local V = {}
 
@@ -534,6 +535,7 @@ local function finance()
     c[#c + 1] = { type = "table", columns = { "Latest big bookings", "" }, widths = { 4, 2 }, aligns = { "left", "right" }, rows = led, size = 12 }
   end
   c[#c + 1] = { type = "divider" }
+  c[#c + 1] = line("Bus Company add-on", "version " .. VERSION)
   c[#c + 1] = { type = "row", children = {
     { type = "button", id = "settings", text = "Settings", icon = "settings", grow = true },
     V.confirm == "reset"
@@ -617,6 +619,7 @@ function V.panel()
       { type = "icon", name = "directions_bus", color = ACCENT },
       { type = "text", text = S.name, size = 16, weight = "bold", grow = true, wrap = false },
       { type = "text", text = U.cut(S.map or "", 16), size = 11, color = MUTED, wrap = false },
+      { type = "badge", text = "v" .. VERSION, color = "#444A52" },
       { type = "badge", text = money(S.cash), color = S.cash >= 0 and GOOD or BAD },
     } },
     { type = "tabs", id = "tab", tabs = TABS, selected = V.tab },
