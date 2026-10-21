@@ -57,6 +57,8 @@ local function load_plugin(world)
   for _, m in ipairs(MODULES) do package.loaded[m] = nil end
   world = world or {}
   world.lines = world.lines or make_lines()
+  -- the older tests set tours up by hand: the automatic allocation has its own section
+  world.settings_values = world.settings_values or { auto_allocate = false }
   world.catalog = world.catalog or CATALOG
   if world.vehicle == nil then
     world.vehicle = { file = "Vehicles/MB_O305/MB_O305.bus", name = "Mercedes-Benz O305", manufacturer = "Mercedes-Benz", model = "O305" }
@@ -165,15 +167,15 @@ do
   local d, why = G.hire(cand.id)
   check("hire works", d and true, why)
   check("fee paid", G.S.cash < cash0)
-  check("one driver", #G.S.drivers == 1)
-  check("candidate removed", #G.S.candidates == 5)
+  check("the starter driver and the new one", #G.S.drivers == 2)
+  check("candidate removed", #G.S.candidates == 5, #G.S.candidates)
   local ok = D.train(G.S, d)
   check("training works", ok and true)
   check("training is rate limited", select(1, D.train(G.S, d)) == false)
   check("wage is plausible", d.wage > 8 and d.wage < 40, d.wage)
   check("day pay has a retainer when idle", near(D.day_pay(d, 0), d.wage * 8 * 0.4))
   check("overtime pays more", D.day_pay(d, 10) > D.day_pay(d, 8))
-  check("fire works", G.fire(d.id) and #G.S.drivers == 0)
+  check("fire works", G.fire(d.id) and #G.S.drivers == 1)
 end
 
 -- =======================================================================================
@@ -441,7 +443,7 @@ do
   g.clock = 7 * 3600
   mock.run_minutes(120)
   mock.fire("stop")   -- saves
-  check("the company was stored as JSON", g.storage.company ~= nil)
+  check("the company was stored as JSON, under the map's name", g.storage["company:TestCity"] ~= nil)
   local cash, nfleet = S.cash, #S.fleet
   -- a new session reads it
   local g2, P2 = load_plugin({ storage = g.storage })
@@ -473,6 +475,268 @@ do
   check("drive works when already in the bus", G.drive_tour("136/1") == true and g.duty ~= nil)
 end
 
+
+-- =======================================================================================
+section("one company per map")
+do
+  local g, P = load_plugin({ map = "Alpha" })
+  local G = P.game
+  G.buy(G.market().new[1])
+  G.borrow(50000)
+  local fleet_a = #G.S.fleet
+  mock.fire("stop")
+  check("saved under the map's name", g.storage["company:Alpha"] ~= nil and g.storage["company"] == nil)
+  check("the company knows its map", G.S.map == "Alpha")
+  -- another map, the same storage: a company of its own
+  local g2, P2 = load_plugin({ map = "Beta", storage = g.storage })
+  check("another map starts a new company", #P2.game.S.fleet == 1 and P2.game.S.cash == 400000, #P2.game.S.fleet)
+  check("with no loans of the other map", P2.company.debt(P2.game.S) == 0)
+  mock.fire("stop")
+  check("both are kept", g.storage["company:Alpha"] ~= nil and g.storage["company:Beta"] ~= nil)
+  -- back to the first map
+  local g3, P3 = load_plugin({ map = "Alpha", storage = g.storage })
+  check("the first map's fleet is back", #P3.game.S.fleet == fleet_a, #P3.game.S.fleet)
+  check("and its loan", P3.company.debt(P3.game.S) == 50000)
+  -- a save from before maps had their own: the first map adopts it
+  local legacy = { company = g.storage["company:Alpha"] }
+  local g4, P4 = load_plugin({ map = "Gamma", storage = legacy })
+  check("an old save is adopted by the first map", #P4.game.S.fleet == fleet_a)
+  check("and moves under the map's name", legacy.company == nil and legacy["company:Gamma"] ~= nil)
+  -- the map changes while the game runs
+  local g5, P5 = load_plugin({ map = "Alpha", storage = g.storage })
+  P5.game.S.cash = 123456
+  g5.map = "Beta"
+  mock.advance(3)
+  check("the company follows the map", P5.game.S.map == "Beta" and P5.game.S.cash == 400000, P5.game.S.map .. " " .. tostring(P5.game.S.cash))
+  local saved = g5.storage["company:Alpha"] and require("util") and mock.game.storage["company:Alpha"]
+  check("the first map's company was saved on leaving", saved ~= nil and saved:find("123456", 1, true) ~= nil)
+end
+
+-- =======================================================================================
+section("allocation: every tour staffed, by the company or by hand")
+do
+  -- the pure part: the best buses and drivers go to the busiest and longest tours
+  local P0 = select(2, load_plugin())
+  local R = P0.routes
+  local function bus(id, cap, cond) return { id = id, spec = { capacity = cap }, condition = cond } end
+  local function drv(id, skill) return { id = id, skill = skill } end
+  local tours = { { key = "136/1", line = "136", tour = "1" }, { key = "M5/1", line = "M5", tour = "1" }, { key = "136/2", line = "136", tour = "2" } }
+  local plan, left = R.plan_allocation(tours, { bus("a", 60, 90), bus("b", 100, 90), bus("c", 80, 90) }, { drv("x", 40), drv("y", 80), drv("z", 60) })
+  check("every tour gets a pair", #plan == 3 and #left == 0)
+  check("the busiest tour gets the biggest bus and the best driver", plan[1].bus.id == "b" and plan[1].driver.id == "y")
+  check("the least busy gets the smallest bus and weakest driver", plan[3].bus.id == "a" and plan[3].driver.id == "x")
+  local plan2, left2 = R.plan_allocation(tours, { bus("a", 60, 90) }, { drv("x", 40), drv("y", 80) })
+  check("with one bus, one tour is staffed and two are left", #plan2 == 1 and #left2 == 2)
+  check("allocation is deterministic", (function()
+    local p1 = R.plan_allocation(tours, { bus("a", 60, 90), bus("b", 60, 90) }, { drv("x", 50), drv("y", 50) })
+    local p2 = R.plan_allocation(tours, { bus("b", 60, 90), bus("a", 60, 90) }, { drv("y", 50), drv("x", 50) })
+    return p1[1].bus.id == p2[1].bus.id and p1[1].driver.id == p2[1].driver.id
+  end)())
+
+  -- the game: the company starts with one bus and one driver, so one tour is staffed
+  local g, P = load_plugin({ settings_values = { auto_allocate = true } })
+  local G, S = P.game, P.game.S
+  check("a new company has a driver", #S.drivers == 1)
+  check("its bus and driver run a tour at the start", #S.assignments == 1 and S.assignments[1].mode == "ai" and S.assignments[1].auto == true, #S.assignments)
+  check("the engine is told", next(g.assigned) ~= nil)
+  S.cash = 3000000
+  G.buy(G.market().new[1]); G.buy(G.market().new[2])
+  check("buses alone staff nothing more", #S.assignments == 1)
+  G.hire(S.candidates[1].id)
+  check("a new driver takes the next tour", #S.assignments == 2, #S.assignments)
+  G.hire(S.candidates[1].id)
+  check("and the next: all three tours are staffed", #S.assignments == 3, #S.assignments)
+  local buses, drivers = {}, {}
+  for _, a in ipairs(S.assignments) do buses[a.bus] = true; drivers[a.driver] = true end
+  local nb, nd = 0, 0
+  for _ in pairs(buses) do nb = nb + 1 end
+  for _ in pairs(drivers) do nd = nd + 1 end
+  check("each on its own bus with its own driver", nb == 3 and nd == 3)
+  check("the alert about open tours is gone", (function() for _, a in ipairs(G.alerts()) do if a.text:find("without a bus") then return false end end return true end)())
+  check("nothing left to allocate", select(1, G.autofill(true)) == 0)
+
+  -- a driver goes: the tour is open until somebody else comes
+  local victim = S.drivers[2]
+  G.fire(victim.id)
+  check("a tour is open again", #S.assignments == 2 and G.uncovered() == 1, #S.assignments)
+  check("the alert says so", (function() for _, a in ipairs(G.alerts()) do if a.text:find("without a bus") then return true end end return false end)())
+  G.hire(S.candidates[1].id)
+  check("the next hire fills it", #S.assignments == 3)
+
+  -- stopped by hand: it stays stopped, until the player asks for everything
+  local key = S.assignments[1].key
+  G.unassign(key)
+  g.clock = 23 * 3600 + 59 * 60
+  mock.run_minutes(3)     -- over midnight
+  check("a tour stopped by hand stays stopped over midnight", R.get(S, key) == nil)
+  local n = G.autofill(true)
+  check("'Allocate all' takes it back", n == 1 and R.get(S, key) ~= nil, n)
+
+  -- by hand: change the bus and the driver
+  G.cfg.auto_allocate = false
+  local a = S.assignments[1]
+  G.fire(S.drivers[1].id == a.driver and S.drivers[2].id or S.drivers[1].id)   -- one driver and one bus not on any tour
+  local spare_bus = G.buy(G.market().new[3])
+  G.hire(S.candidates[1].id)
+  local spare = nil
+  for _, d in ipairs(S.drivers) do if not d.assignment then spare = d end end
+  local old_bus, old_driver = a.bus, a.driver
+  local ok, why = G.reassign(a.key, spare_bus.id, spare and spare.id or nil)
+  check("reassigning works", ok, why)
+  if ok then
+    check("the tour has the new bus", a.bus == spare_bus.id and spare_bus.assignment == a.key)
+    check("the old bus is free", P.fleet.get(S, old_bus).assignment == nil)
+    check("the old driver is free", P.drivers.get(S, old_driver).assignment == nil)
+    check("the engine got the new bus", g.assigned[a.key] and g.assigned[a.key].number == spare_bus.number)
+  end
+  check("a bus on another tour cannot be taken", (function()
+    local other = S.assignments[2]
+    local okx = G.reassign(a.key, other.bus, nil)
+    return okx == false
+  end)())
+
+  -- hand a tour to the player and back
+  local ok2 = G.set_mode(a.key, "player")
+  check("a tour can become the player's", ok2 and a.mode == "player" and a.driver == nil)
+  check("its driver is free", spare and P.drivers.get(S, spare.id).assignment == nil or not spare)
+  check("the engine's AI no longer uses the bus", g.assigned[a.key] == nil)
+  local free_d
+  for _, d in ipairs(S.drivers) do if not d.assignment then free_d = d end end
+  local ok3 = free_d and G.set_mode(a.key, "ai", free_d.id)
+  check("and be handed back to an AI driver", ok3 and a.mode == "ai" and a.driver == free_d.id and g.assigned[a.key] ~= nil)
+end
+
+-- =======================================================================================
+section("driving a trip of a tour the AI runs")
+do
+  local g, P = load_plugin({ settings_values = { auto_allocate = true } })
+  local G, S, R = P.game, P.game.S, P.routes
+  local a = S.assignments[1]
+  check("the starter bus runs a tour", a ~= nil and a.mode == "ai")
+  local bus = P.fleet.get(S, a.bus)
+  check("the player sits in that bus", bus.file == g.vehicle.file)
+  check("before taking a trip the player earns nothing from it", R.player_can(a, S.day_idx or 0) == false)
+  local trips = R.schedule(a.line, a.tour)
+  g.clock = 8 * 3600
+  mock.run_minutes(1)
+  local idx = G.next_trip(a)
+  check("the next trip is found from the clock", idx and trips[idx].finish > g.clock, idx)
+  local pick = idx + 2
+  local ok, why = G.drive_tour(a.key, pick)
+  check("driving a trip of an AI tour starts the duty", ok, why)
+  check("the duty is that trip", g.calls[#g.calls] == "duty.start " .. a.line .. "/" .. a.tour .. "#" .. pick, g.calls[#g.calls])
+  check("the trip is the player's today", a.taken[tostring(trips[pick].n)] ~= nil)
+  mock.fire("duty_start", a.line, a.tour)
+  check("a company bus on a company tour is counted", G.drive ~= nil and G.player_bus() ~= nil)
+  local before = S.life.fares or 0
+  mock.fire("ticket_sold", "Single", 2.7)
+  check("tickets sold on the trip are the company's fares", (S.life.fares or 0) > before)
+  local sub0 = S.life.subsidy or 0
+  mock.fire("trip_done", pick, "arrived", 85, 80, 90)
+  check("the authority pays the player for the trip", (S.life.subsidy or 0) > sub0)
+  -- the AI is paid for every other trip but not this one
+  mock.fire("duty_end")
+  mock.run_minutes(13 * 60)
+  local expected = 0
+  for _, t in ipairs(trips) do if t.start >= a.since_time then expected = expected + 1 end end
+  local ran = a.stats.trips + a.stats.missed
+  -- (the player's trip is counted once, by the trip_done above; the AI's model would have counted it again)
+  check("the AI model skips the trip the player drove", ran == expected, ran .. " of " .. expected)
+  check("the taken trip is still marked during the day", next(a.taken) ~= nil)
+  mock.run_minutes(4 * 60)
+  check("the taken trips are forgotten at midnight", next(a.taken) == nil)
+  -- a duty started from the game menu on an AI tour is a takeover too
+  local a2 = S.assignments[1]
+  g.clock = 9 * 3600
+  g.duty = { line = a2.line, tour = a2.tour, trip = 7 }
+  mock.fire("duty_start", a2.line, a2.tour)
+  mock.fire("trip_start")
+  check("a duty begun in the game menu takes that trip over", a2.taken[tostring(R.schedule(a2.line, a2.tour)[7].n)] ~= nil)
+  -- another bus: the game places the company's bus first, with its livery
+  mock.fire("duty_end")
+  bus.livery = "Red"
+  g.vehicle = { file = "Vehicles/MAN_SD202/MAN_SD202.bus", name = "MAN SD202", manufacturer = "MAN", model = "SD202" }
+  local ok4 = G.drive_tour(a.key, G.next_trip(a))
+  check("a bus that is not the tour's gets swapped in", ok4 and g.place_request and g.place_request.file == bus.file, g.place_request and g.place_request.file)
+  check("in the company's livery", g.place_request.opts.paint == "Red")
+  check("the duty waits for the bus", G.pending ~= nil)
+  mock.finish_placing({ file = bus.file, name = "Mercedes-Benz O305", manufacturer = "Mercedes-Benz", model = "O305" })
+  check("then it starts", g.calls[#g.calls]:find("^duty.start") ~= nil, g.calls[#g.calls])
+end
+
+-- =======================================================================================
+section("livery: repaint live")
+do
+  local g, P = load_plugin({})
+  local G, V, S, F = P.game, P.views, P.game.S, P.fleet
+  local file = g.vehicle.file
+  g.liveries = { [file] = { "Blue", "Red" } }
+  G.liveries_cache = {}
+  check("the liveries of a bus are listed", #G.liveries(file) == 2)
+  check("no liveries for a bus with none", #G.liveries("Vehicles/Nothing/Nothing.bus") == 0)
+  V.change("tab", V.LIVERY_TAB)
+  local panel = V.panel()
+  local function find(list, pred)
+    for _, e in ipairs(list) do
+      if pred(e) then return e end
+      if e.children then local f = find(e.children, pred); if f then return f end end
+    end
+  end
+  check("the tab lists original paint and the liveries", find(panel.children, function(e) return e.id == "lv:1" end) and find(panel.children, function(e) return e.id == "lv:3" end))
+  check("it builds as a valid panel", pcall(omsi.ui.set, "t", panel))
+  V.click("lv:2")
+  check("a click repaints the bus you sit in", g.repaint_request == "Blue", g.repaint_request)
+  check("the company bus remembers it", S.fleet[1].livery == "Blue", S.fleet[1].livery)
+  check("the tab says it is repainting", find(V.panel().children, function(e) return e.type == "text" and e.text and e.text:find("Repainting") end) ~= nil)
+  V.click("lv:3")
+  check("a second click while it loads is refused with a reason", V.msg ~= nil and g.repaint_request == "Blue", V.msg)
+  mock.finish_placing({ file = file, name = "Mercedes-Benz O305", manufacturer = "Mercedes-Benz", model = "O305" })
+  g.livery = "Blue"
+  V.click("lv:3")
+  check("then the next livery goes on", g.repaint_request == "Red" and S.fleet[1].livery == "Red")
+  mock.finish_placing({ file = file, name = "Mercedes-Benz O305", manufacturer = "Mercedes-Benz", model = "O305" })
+  V.click("lv:1")
+  check("original paint is nil", g.repaint_request == nil and S.fleet[1].livery == nil and g.calls[#g.calls] == "fleet.repaint nil", g.calls[#g.calls])
+  mock.finish_placing({ file = file, name = "Mercedes-Benz O305", manufacturer = "Mercedes-Benz", model = "O305" })
+  -- the whole fleet of the model
+  S.cash = 2000000
+  local other
+  for _, o in ipairs(G.market().new) do if o.file ~= file then other = o; break end end
+  local second = G.buy(other)
+  local third = F.add(S, { file = file, name = "MB O305", spec = S.fleet[1].spec, age = 1, condition = 80, odometer = 1000 })
+  g.livery = "Red"
+  V.click("lvall")
+  check("all buses of the model get the livery", third.livery == "Red" and S.fleet[1].livery == "Red" and second.livery == nil)
+  -- a livery chosen in the fleet reaches the AI that runs the tour
+  local a = S.assignments[1]
+  local drv = G.hire(S.candidates[1].id)
+  V.change("tab", 2)
+  V.click("bus:" .. third.id)
+  V.click("buslivery")
+  check("the fleet tab cycles the company's livery", third.livery ~= "Red", third.livery)
+  local ra = G.assign("136/1", third.id, drv.id, "ai")
+  G.set_livery(third, "Blue")
+  check("the AI tour's bus gets the livery from its next departure", g.assigned["136/1"] and g.assigned["136/1"].paint == "Blue", g.assigned["136/1"] and g.assigned["136/1"].paint)
+  -- the hotkey opens the tab
+  g.hotkeys["Ctrl+KeyL"]()
+  check("Ctrl+L shows the livery tab", V.tab == V.LIVERY_TAB and g.panels.bc ~= nil)
+  g.hotkeys["Ctrl+KeyL"]()
+  check("and again hides the window", g.panels.bc == nil)
+  g.hotkeys["Ctrl+KeyL"]()
+end
+
+-- =======================================================================================
+section("livery without the engine's repaint")
+do
+  local g, P = load_plugin({ fleet_api = false })
+  local V = P.views
+  check("there is no repaint", P.game.has_liveries() == false)
+  V.change("tab", V.LIVERY_TAB)
+  check("the tab explains it and builds", pcall(omsi.ui.set, "t", V.panel()))
+  check("a repaint is refused with a reason", select(1, P.game.repaint("Blue")) == false)
+  check("clicking in it does no harm", pcall(V.click, "lv:2"))
+end
+
 -- =======================================================================================
 section("the panels")
 do
@@ -489,7 +753,8 @@ do
     for _, d in ipairs(S.drivers) do if not d.assignment then drv = d break end end
     if free[1] and drv then G.assign(P.routes.scan()[i].key, free[1].id, drv.id, i == 3 and "player" or "ai") end
   end
-  for tab = 1, 6 do
+  g.liveries = { ["Vehicles/MB_O305/MB_O305.bus"] = { "Blue", "Red", "Green", "Yellow", "Pink", "Grey", "Teal", "Navy" } }
+  for tab = 1, 7 do
     V.change("tab", tab)
     local ok, panel = pcall(V.panel)
     check("tab " .. tab .. " builds", ok, panel)
@@ -500,7 +765,9 @@ do
   end
   -- click through everything
   local clicks = {}
-  for tab = 1, 6 do
+  V.change("tab", 4)
+  V.click("tour:136/1")
+  for tab = 1, 7 do
     V.change("tab", tab)
     local panel = V.panel()
     local function walk(list)

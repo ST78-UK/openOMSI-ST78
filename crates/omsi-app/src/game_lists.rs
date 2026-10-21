@@ -320,6 +320,14 @@ fn liveries(def: &omsi_vehicle::Vehicle) -> Vec<String> {
     names
 }
 
+/// The liveries of a vehicle file of the menu's list, by name, alphabetical (`omsi.fleet.liveries`).
+pub(crate) fn bus_liveries(app: &App, bus: &str) -> Vec<String> {
+    let mut names = bus_def(app, bus).map(|d| liveries(&d)).unwrap_or_default();
+    names.sort_by_key(|n| n.to_lowercase());
+    names.dedup();
+    names
+}
+
 /// A seed that differs from call to call (the random livery).
 fn fresh_seed() -> u64 {
     use std::hash::{BuildHasher, Hasher};

@@ -17,7 +17,8 @@ local ACCENT = "#F47F30"
 local GOOD, BAD, WARN, MUTED = "#2E7D32", "#C62828", "#F9A825", "#9AA0A6"
 
 V.tab = 1
-V.page = { fleet = 1, market = 1, routes = 1, staff = 1, cands = 1 }
+V.page = { fleet = 1, market = 1, routes = 1, staff = 1, cands = 1, livery = 1 }
+V.trip_off = nil           -- the first trip shown in the route editor (nil: the next to leave)
 V.sel = { bus = nil, offer = nil, tour = nil, driver = nil, cand = nil }
 V.market_kind = 1          -- 1 new, 2 used
 V.market_class = 1         -- 1 all, then B.class_order
@@ -28,8 +29,10 @@ V.msg = nil
 V.msg_color = nil
 V.rename = nil
 
-local TABS = { "Overview", "Fleet", "Market", "Routes", "Staff", "Finance" }
-local PER_PAGE = { fleet = 6, market = 6, routes = 7, staff = 5, cands = 4 }
+local TABS = { "Overview", "Fleet", "Market", "Routes", "Staff", "Finance", "Livery" }
+V.LIVERY_TAB = 7
+local PER_PAGE = { fleet = 6, market = 6, routes = 6, staff = 5, cands = 4, livery = 7 }
+local TRIPS_SHOWN = 5
 
 local function say(text, ok)
   V.msg, V.msg_color = text, ok and GOOD or BAD
@@ -145,6 +148,12 @@ local function bus_detail(b)
   c[#c + 1] = line("Status", status, color)
   c[#c + 1] = line("Runs on", string.format("%.1f %s per 100 km, %s per km upkeep", b.spec.consumption, b.spec.energy == "electric" and "kWh" or "litres", money(Cat.maint_per_km(b.spec, b.condition), 2)))
   c[#c + 1] = line("Value / dealer pays", money(F.value(b)) .. " / " .. money(F.resale(b)))
+  if G.has_liveries() then
+    c[#c + 1] = { type = "row", children = {
+      { type = "text", text = "Livery: " .. (b.livery or "original paint"), grow = true, wrap = false },
+      { type = "button", id = "buslivery", text = "Next", icon = "format_paint" },
+    } }
+  end
   c[#c + 1] = { type = "row", children = {
     { type = "button", id = "service", text = "Service " .. money(G.cost(F.service_cost(b))), icon = "build", grow = true },
     { type = "button", id = "sell", text = "Sell", icon = "sell", grow = true, color = BAD },
@@ -268,6 +277,62 @@ local function cycle(list, current_id)
   return list[1]
 end
 
+--- The buses and drivers a tour could have: the free ones and those it has now.
+local function pick_lists(a)
+  local S = G.S
+  local buses = F.free_buses(S, G.now_abs())
+  local cur = a and F.get(S, a.bus)
+  if cur then
+    local seen = false
+    for _, x in ipairs(buses) do if x == cur then seen = true end end
+    if not seen then table.insert(buses, 1, cur) end
+  end
+  local drivers = {}
+  local cur_d = a and a.driver and D.get(S, a.driver)
+  if cur_d then drivers[1] = cur_d end
+  for _, d in ipairs(S.drivers) do
+    if not d.assignment then drivers[#drivers + 1] = d end
+  end
+  return buses, drivers
+end
+
+local function has_id(list, id)
+  for _, x in ipairs(list) do if x.id == id then return true end end
+  return false
+end
+
+local function trip_rows(t, a)
+  local c = {}
+  local trips = R.schedule(t.line, t.tour)
+  if #trips == 0 then return c end
+  local now = omsi.world.time() or 0
+  local day = G.S.day_idx or G.today_idx() or 0
+  local first = #trips
+  for i, tr in ipairs(trips) do
+    if tr.finish > now then first = i; break end
+  end
+  V.trip_off = U.clamp(V.trip_off or (first - 1), 0, math.max(0, #trips - 1))
+  c[#c + 1] = { type = "row", align = "between", children = {
+    { type = "text", text = "Trips (drive one yourself)", weight = "bold" },
+    { type = "button", id = "tripoff:-" .. TRIPS_SHOWN, text = "Earlier", icon = "expand_less" },
+    { type = "button", id = "tripoff:" .. TRIPS_SHOWN, text = "Later", icon = "expand_more" },
+  } }
+  for i = V.trip_off + 1, math.min(#trips, V.trip_off + TRIPS_SHOWN) do
+    local tr = trips[i]
+    local mine = a.mode == "player" or (a.taken and a.taken[tostring(tr.n)] == day)
+    local state = tr.finish <= now and "done" or (mine and "you" or "AI")
+    local row = {
+      { type = "text", text = string.format("%d  %s - %s", i, U.hhmm(tr.start), U.hhmm(tr.finish)), grow = true, wrap = false },
+      { type = "text", text = state, color = (state == "you") and ACCENT or MUTED, size = 12, wrap = false },
+    }
+    if tr.finish > now then
+      row[#row + 1] = { type = "button", id = "trip:" .. t.key .. ":" .. i, text = "Drive", icon = "play_arrow" }
+    end
+    c[#c + 1] = { type = "row", children = row }
+  end
+  return c
+end
+
 local function route_editor(t, a)
   local S = G.S
   local c = { { type = "divider" } }
@@ -276,48 +341,60 @@ local function route_editor(t, a)
   c[#c + 1] = line("Day", string.format("%d trips, %s to %s, about %.0f km", sum.trips, sum.first and U.hhmm(sum.first) or "-", sum.last and U.hhmm(sum.last) or "-", sum.km))
   c[#c + 1] = line("Demand", R.demand_label(R.line_demand(t.line)))
   if not t.today then c[#c + 1] = { type = "text", text = "This tour does not run today.", color = WARN, size = 12 } end
+  local buses, drivers = pick_lists(a)
+  if not (V.pick.bus and has_id(buses, V.pick.bus)) then V.pick.bus = buses[1] and buses[1].id or nil end
+  if not (V.pick.driver and has_id(drivers, V.pick.driver)) then V.pick.driver = drivers[1] and drivers[1].id or nil end
+  local bus, drv = V.pick.bus and F.get(S, V.pick.bus), V.pick.driver and D.get(S, V.pick.driver)
+  local player_run = a and a.mode == "player"
   if a then
-    local bus, drv = F.get(S, a.bus), D.get(S, a.driver)
-    c[#c + 1] = line("Operated", a.mode == "ai" and "by AI driver" or "by you", GOOD)
-    c[#c + 1] = line("Bus", bus and ("No. " .. bus.number .. " " .. U.cut(bus.name, 18)) or "-")
-    if a.mode == "ai" then c[#c + 1] = line("Driver", drv and drv.name or "-") end
+    c[#c + 1] = line("Operated", player_run and "by you" or ("by " .. (D.get(S, a.driver) or { name = "-" }).name), GOOD)
     c[#c + 1] = line("Trips run / on time", string.format("%d / %d", a.stats.trips, a.stats.ontime))
     c[#c + 1] = line("Today", money(a.today.revenue - a.today.costs), (a.today.revenue - a.today.costs) >= 0 and GOOD or BAD)
-    c[#c + 1] = line("Fare level", string.format("%.0f %%", a.fare * 100))
-    c[#c + 1] = { type = "slider", id = "fare", value = a.fare, min = B.fare_min, max = B.fare_max, step = 0.05 }
-    c[#c + 1] = { type = "text", text = "Higher fares earn more per rider and lose riders.", size = 11, color = MUTED }
-    local row = {}
-    if a.mode == "player" then row[#row + 1] = { type = "button", id = "drive:" .. a.key, text = "Drive it", icon = "play_arrow", grow = true } end
-    row[#row + 1] = { type = "button", id = "unassign:" .. a.key, text = "Stop service", icon = "block", grow = true, color = BAD }
-    c[#c + 1] = { type = "row", children = row }
-  else
-    local buses = F.free_buses(S, G.now_abs())
-    local drivers = {}
-    for _, d in ipairs(S.drivers) do if not d.assignment then drivers[#drivers + 1] = d end end
-    if not (V.pick.bus and F.get(S, V.pick.bus) and not F.get(S, V.pick.bus).assignment) then V.pick.bus = buses[1] and buses[1].id or nil end
-    if not (V.pick.driver and D.get(S, V.pick.driver) and not D.get(S, V.pick.driver).assignment) then V.pick.driver = drivers[1] and drivers[1].id or nil end
-    local bus, drv = V.pick.bus and F.get(S, V.pick.bus), V.pick.driver and D.get(S, V.pick.driver)
-    c[#c + 1] = { type = "row", children = {
-      { type = "text", text = bus and ("Bus: No. " .. bus.number .. " " .. U.cut(bus.name, 16)) or "No free bus", grow = true, wrap = false },
-      { type = "button", id = "nextbus", text = "Next", icon = "swap_horiz" },
-    } }
+  end
+  -- who runs it: pick a bus and a driver from the free ones
+  c[#c + 1] = { type = "row", children = {
+    { type = "text", text = bus and ("Bus: No. " .. bus.number .. " " .. U.cut(bus.name, 16)) or "No free bus", grow = true, wrap = false },
+    { type = "button", id = "nextbus", text = "Next", icon = "swap_horiz" },
+  } }
+  if not player_run then
     c[#c + 1] = { type = "row", children = {
       { type = "text", text = drv and ("Driver: " .. drv.name .. " (" .. drv.skill .. ")") or "No free driver", grow = true, wrap = false },
       { type = "button", id = "nextdriver", text = "Next", icon = "swap_horiz" },
     } }
-    if bus and drv and sum.trips > 0 then
-      local e = R.estimate_day({
-        spec = bus.spec, condition = bus.condition, driver = drv, demand = R.line_demand(t.line), fare = 1,
-        rep = Co.demand_factor(S), fare_base = G.fare_base(), energy = S.energy, weekday = 2, weather = 1,
-      }, R.schedule(t.line, t.tour))
-      -- revenue scales with the income factor, costs with the cost factor, both with the pace
-      local net = G.inc(e.revenue) - G.cost(e.costs)
-      c[#c + 1] = line("Expected per day", money(net), net >= 0 and GOOD or BAD)
-    end
+  end
+  if bus and (player_run or drv) and sum.trips > 0 then
+    local e = R.estimate_day({
+      spec = bus.spec, condition = bus.condition, driver = drv or { skill = 70, punctuality = 70, courtesy = 70, wage = D.market_wage(70) },
+      demand = R.line_demand(t.line), fare = a and a.fare or 1,
+      rep = Co.demand_factor(S), fare_base = G.fare_base(), energy = S.energy, weekday = 2, weather = 1,
+    }, R.schedule(t.line, t.tour))
+    -- revenue scales with the income factor, costs with the cost factor, both with the pace
+    local net = G.inc(e.revenue) - G.cost(e.costs)
+    c[#c + 1] = line("Expected per day", money(net), net >= 0 and GOOD or BAD)
+  end
+  if a then
+    c[#c + 1] = line("Fare level", string.format("%.0f %%", a.fare * 100))
+    c[#c + 1] = { type = "slider", id = "fare", value = a.fare, min = B.fare_min, max = B.fare_max, step = 0.05 }
+    c[#c + 1] = { type = "text", text = "Higher fares earn more per rider and lose riders.", size = 11, color = MUTED }
+    local changed = (V.pick.bus ~= a.bus) or (not player_run and V.pick.driver ~= a.driver)
     local row = {}
-    row[#row + 1] = { type = "button", id = "start_ai", text = "AI driver runs it", icon = "smart_toy", grow = true }
-    row[#row + 1] = { type = "button", id = "start_me", text = "I drive it", icon = "person", grow = true }
+    if changed then row[#row + 1] = { type = "button", id = "reassign", text = "Apply bus / driver", icon = "check", grow = true } end
+    if player_run then
+      row[#row + 1] = { type = "button", id = "tomode:ai", text = "Hand to AI driver", icon = "smart_toy", grow = true }
+    else
+      row[#row + 1] = { type = "button", id = "tomode:player", text = "I drive it all day", icon = "person", grow = true }
+    end
     c[#c + 1] = { type = "row", children = row }
+    c[#c + 1] = { type = "row", children = {
+      { type = "button", id = "drive:" .. a.key, text = "Drive next trip", icon = "play_arrow", grow = true },
+      { type = "button", id = "unassign:" .. a.key, text = "Stop service", icon = "block", grow = true, color = BAD },
+    } }
+    for _, e in ipairs(trip_rows(t, a)) do c[#c + 1] = e end
+  else
+    c[#c + 1] = { type = "row", children = {
+      { type = "button", id = "start_ai", text = "AI driver runs it", icon = "smart_toy", grow = true },
+      { type = "button", id = "start_me", text = "I drive it", icon = "person", grow = true },
+    } }
   end
   return c
 end
@@ -325,6 +402,17 @@ end
 local function routes()
   local S = G.S
   local c = {}
+  local todays, staffed = 0, 0
+  for _, t in ipairs(R.scan()) do
+    if t.today and t.trips > 0 then
+      todays = todays + 1
+      if R.get(S, t.key) then staffed = staffed + 1 end
+    end
+  end
+  c[#c + 1] = { type = "row", align = "between", children = {
+    { type = "text", text = string.format("%d of %d tours today staffed", staffed, todays), color = (staffed == todays) and GOOD or WARN, grow = true },
+    { type = "button", id = "autofill", text = "Allocate all", icon = "auto_fix_high" },
+  } }
   c[#c + 1] = { type = "tabs", id = "rfilter", tabs = { "All tours", "Operated" }, selected = V.routes_filter }
   local rows = tour_rows()
   if #rows == 0 then
@@ -333,9 +421,10 @@ local function routes()
   for _, r in ipairs(slice(rows, "routes")) do
     local t, a = r.tour, r.a
     local right = a and (a.mode == "ai" and "AI" or "You") or (t.today and "" or "not today")
+    local who = a and a.mode == "ai" and D.get(S, a.driver)
     c[#c + 1] = { type = "row", id = "tour:" .. t.key, clickable = true, children = {
       { type = "text", text = "Line " .. t.line .. " / " .. t.tour, grow = true, wrap = false, weight = (V.sel.tour == t.key) and "bold" or "regular" },
-      { type = "text", text = t.trips .. " trips", color = MUTED, size = 12, wrap = false },
+      { type = "text", text = who and U.cut(who.name, 12) or (t.trips .. " trips"), color = MUTED, size = 12, wrap = false },
       { type = "badge", text = right ~= "" and right or "free", color = a and GOOD or "#444A52" },
     } }
   end
@@ -455,10 +544,71 @@ local function finance()
 end
 
 -- ---------------------------------------------------------------------------------------
+-- Livery: repaint the bus you sit in, live
+-- ---------------------------------------------------------------------------------------
+
+--- The choices of the livery list: the model's own textures first, then the liveries.
+local function livery_entries(file)
+  local list = { { name = nil, label = "Original paint" } }
+  for _, n in ipairs(G.liveries(file)) do
+    list[#list + 1] = { name = n, label = n }
+  end
+  return list
+end
+
+local function livery()
+  local S = G.S
+  local c = {}
+  if not G.has_liveries() then
+    c[#c + 1] = { type = "box", color = WARN, children = { { type = "text", text = "This openOMSI cannot repaint buses. The livery tool needs the omsi.fleet.repaint function (see the add-on's README, Engine changes).", size = 13 } } }
+    return c
+  end
+  if not omsi.has_vehicle() then
+    c[#c + 1] = { type = "text", text = "Get into a bus (Esc, Swap) to repaint it.", color = MUTED }
+    return c
+  end
+  local file = omsi.bus.file()
+  local cur = G.current_livery()
+  local entries = livery_entries(file)
+  local bus = G.player_bus() or F.by_file(S, file)
+  c[#c + 1] = line("Bus", U.cut(omsi.vehicle() or file or "?", 28))
+  c[#c + 1] = line("Livery now", cur or "Original paint")
+  if bus then c[#c + 1] = line("Company bus", "No. " .. bus.number .. ", remembers its livery") end
+  if omsi.fleet.busy() then
+    c[#c + 1] = { type = "box", color = ACCENT, children = { { type = "text", text = "Repainting: the bus is being read again ...", size = 13 } } }
+  end
+  if #entries == 1 then
+    c[#c + 1] = { type = "text", text = "This bus has no extra liveries installed.", color = MUTED, size = 12 }
+  end
+  local per = PER_PAGE.livery
+  local pages = math.max(1, math.ceil(#entries / per))
+  V.page.livery = U.clamp(V.page.livery, 1, pages)
+  for i = (V.page.livery - 1) * per + 1, math.min(#entries, V.page.livery * per) do
+    local e = entries[i]
+    local on = (e.name == cur) or (e.name == nil and cur == nil)
+    c[#c + 1] = { type = "row", id = "lv:" .. i, clickable = true, children = {
+      { type = "icon", name = on and "radio_button_checked" or "radio_button_unchecked", color = on and ACCENT or MUTED },
+      { type = "text", text = e.label, grow = true, wrap = false, weight = on and "bold" or "regular" },
+    } }
+  end
+  local p = pager("livery", #entries)
+  if p then c[#c + 1] = p end
+  if bus then
+    local n = 0
+    for _, b in ipairs(S.fleet) do if b.file == bus.file then n = n + 1 end end
+    if n > 1 then
+      c[#c + 1] = { type = "button", id = "lvall", text = "Paint all " .. n .. " company buses of this model like this", icon = "format_color_fill" }
+    end
+  end
+  c[#c + 1] = { type = "text", text = "Click a livery: the game reads the bus again and puts it where it stands, so speed, doors and switches start afresh.", size = 11, color = MUTED }
+  return c
+end
+
+-- ---------------------------------------------------------------------------------------
 -- The window
 -- ---------------------------------------------------------------------------------------
 
-local BODY = { overview, fleet, market, routes, staff, finance }
+local BODY = { overview, fleet, market, routes, staff, finance, livery }
 
 function V.panel()
   local S = G.S
@@ -466,6 +616,7 @@ function V.panel()
     { type = "row", children = {
       { type = "icon", name = "directions_bus", color = ACCENT },
       { type = "text", text = S.name, size = 16, weight = "bold", grow = true, wrap = false },
+      { type = "text", text = U.cut(S.map or "", 16), size = 11, color = MUTED, wrap = false },
       { type = "badge", text = money(S.cash), color = S.cash >= 0 and GOOD or BAD },
     } },
     { type = "tabs", id = "tab", tabs = TABS, selected = V.tab },
@@ -481,7 +632,7 @@ function V.panel()
     children[#children + 1] = { type = "box", color = V.msg_color, children = { { type = "text", text = V.msg, size = 13 } } }
   end
   for _, e in ipairs(BODY[V.tab]()) do children[#children + 1] = e end
-  return { anchor = "top_left", x = 16, y = 64, width = 440, accent = ACCENT, draggable = true, grab = true, children = children }
+  return { anchor = "top_left", x = 16, y = 64, width = 460, accent = ACCENT, draggable = true, grab = true, children = children }
 end
 
 function V.hud()
@@ -532,12 +683,33 @@ function V.click(id, settings_fn)
     V.page[name] = (V.page[name] or 1) + tonumber(d)
   elseif kind == "bus" then V.sel.bus = rest
   elseif kind == "offer" then V.sel.offer = rest
-  elseif kind == "tour" then V.sel.tour = rest; V.pick = { bus = nil, driver = nil }
+  elseif kind == "tour" then
+    V.sel.tour = rest
+    local a = R.get(S, rest)
+    V.pick = { bus = a and a.bus or nil, driver = a and a.driver or nil }
+    V.trip_off = nil
   elseif kind == "drv" then V.sel.driver = rest
   elseif kind == "cand" then V.sel.cand = rest
   elseif kind == "drive" then
     local ok, why = G.drive_tour(rest)
     result(ok, why, why or "Starting the duty.")
+  elseif kind == "trip" then
+    local key, n = rest:match("^(.*):(%d+)$")
+    if key then
+      local ok, why = G.drive_tour(key, tonumber(n))
+      result(ok, why, why or "Starting the duty.")
+    end
+  elseif kind == "tripoff" then
+    V.trip_off = (V.trip_off or 0) + (tonumber(rest) or 0)
+  elseif kind == "tomode" then
+    if V.sel.tour then
+      local ok, why = G.set_mode(V.sel.tour, rest, rest == "ai" and V.pick.driver or nil)
+      result(ok, why, rest == "ai" and "An AI driver runs it again." or "It is yours to drive.")
+    end
+  elseif kind == "lv" then
+    local file = omsi.bus.file and omsi.bus.file()
+    local e = livery_entries(file)[tonumber(rest)]
+    if e then result(G.repaint(e.name)) end
   elseif kind == "unassign" then
     G.unassign(rest)
     say("Service stopped.", true)
@@ -565,15 +737,38 @@ function V.click(id, settings_fn)
       if price then V.sel.bus = nil end
       result(price, why, "Sold for " .. money(price or 0))
     end
+  elseif id == "autofill" then
+    local n, left = G.autofill(true)
+    say(n > 0 and (n .. " tours staffed" .. (left > 0 and (", " .. left .. " still need a bus and a driver") or "") .. ".") or "Nothing to allocate: no free bus and driver for an open tour.", n > 0)
+  elseif id == "reassign" then
+    if V.sel.tour then
+      local ok, why = G.reassign(V.sel.tour, V.pick.bus, V.pick.driver)
+      result(ok, why, "Changed.")
+    end
+  elseif id == "lvall" then
+    local file = omsi.bus.file and omsi.bus.file()
+    local n = G.set_livery_model(file, G.current_livery())
+    say(n .. " buses now carry this livery.", true)
+  elseif id == "buslivery" then
+    local b = V.sel.bus and F.get(S, V.sel.bus)
+    if b then
+      local list = { false }
+      for _, n in ipairs(G.liveries(b.file)) do list[#list + 1] = n end
+      local idx = 1
+      for i, n in ipairs(list) do if (n or nil) == b.livery then idx = i end end
+      local nextv = list[(idx % #list) + 1] or nil
+      G.set_livery(b, nextv)
+      say("Livery: " .. (nextv or "original paint") .. ".", true)
+    end
   elseif id == "nextbus" then
-    V.pick.bus = (function()
-      local n = cycle(F.free_buses(S, G.now_abs()), V.pick.bus)
-      return n and n.id
-    end)()
+    local a = V.sel.tour and R.get(S, V.sel.tour)
+    local buses = pick_lists(a)
+    local n = cycle(buses, V.pick.bus)
+    V.pick.bus = n and n.id
   elseif id == "nextdriver" then
-    local free = {}
-    for _, d in ipairs(S.drivers) do if not d.assignment then free[#free + 1] = d end end
-    local n = cycle(free, V.pick.driver)
+    local a = V.sel.tour and R.get(S, V.sel.tour)
+    local _, drivers = pick_lists(a)
+    local n = cycle(drivers, V.pick.driver)
     V.pick.driver = n and n.id
   elseif id == "start_ai" or id == "start_me" then
     if not V.sel.tour then return end

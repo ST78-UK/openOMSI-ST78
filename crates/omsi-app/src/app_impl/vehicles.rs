@@ -7,6 +7,13 @@ impl App {
     /// scheme's name; None: at random) with the depot file `hof` (None: the map's).
     /// The driven vehicle read again from its files and put where it stands (#728).
     pub(crate) fn reload_driven_vehicle(&mut self) {
+        self.reread_driven_vehicle(None);
+    }
+
+    /// The driven vehicle read again from its files, in `paint` when given (`Some(None)`: the
+    /// model's own textures; `None`: the livery it wears now), and put where it stands: the
+    /// game menu's reload, and `omsi.fleet.repaint`'s live livery change.
+    pub(crate) fn reread_driven_vehicle(&mut self, paint: Option<Option<String>>) {
         let Some(p) = self.player.as_ref() else {
             self.service_msg = Some(("There is no vehicle to reload: you are on foot".into(), 3.0));
             return;
@@ -15,7 +22,7 @@ impl App {
         // taken for one under the game's folder)
         let file = &p.vehicle.ty.def.path;
         let bus = omsi_cfg::content_roots().iter().chain(std::iter::once(&self.args.root)).find_map(|r| file.strip_prefix(r).ok()).unwrap_or(file).to_string_lossy().replace('\\', "/");
-        let paint = p.vehicle.host.paint_scheme.flatten().and_then(|i| p.vehicle.ty.paint_schemes.get(i)).map(|s| s.name.clone());
+        let paint = paint.unwrap_or_else(|| p.vehicle.host.paint_scheme.flatten().and_then(|i| p.vehicle.ty.paint_schemes.get(i)).map(|s| s.name.clone()));
         // (the depot file by its file name, as `find_hof` looks for it)
         let hof = p.vehicle.host.hof.as_ref().and_then(|h| h.path.file_stem().map(|s| s.to_string_lossy().to_string()).or_else(|| Some(h.name.clone())));
         let idle = self.menus.pending_placement.is_none();

@@ -278,6 +278,21 @@ pub trait PluginIo {
     fn fleet_busy(&self) -> bool {
         false
     }
+    /// The liveries (paint schemes) of the vehicle `file`, by name; the model's own textures
+    /// (the "original paint") are not in the list.
+    fn fleet_liveries(&mut self, _file: &str) -> Vec<String> {
+        Vec::new()
+    }
+    /// The livery the driven vehicle wears (None: the model's own textures, or no vehicle).
+    fn fleet_livery(&self) -> Option<String> {
+        None
+    }
+    /// Puts the driven vehicle in another livery (`paint` None: the model's own textures): the
+    /// vehicle is read again and put where it stands, as the game menu's reload does, so the
+    /// `vehicle` event follows some frames later.
+    fn fleet_repaint(&mut self, _paint: Option<&str>) -> Result<(), String> {
+        Err("this game cannot repaint vehicles".into())
+    }
     /// From the tour's next departure on, the timetable's AI runs line `line`, tour `tour` with
     /// the vehicle `file` (fleet number `number`, livery `paint`) instead of the map's own.
     fn fleet_assign(&mut self, _line: &str, _tour: &str, _file: &str, _number: &str, _paint: Option<&str>) -> Result<(), String> {

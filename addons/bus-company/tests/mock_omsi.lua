@@ -170,7 +170,7 @@ function M.new(world)
     catalog = world.catalog, placing = false, assigned = {},
     duty = nil, precip = { "none", 0 },
     tickets = world.tickets or { { name = "Single", price = 2.7, day_ticket = false }, { name = "Day", price = 7, day_ticket = true } },
-    settings_values = {},
+    settings_values = world.settings_values or {},
   }
   M.game = g
 
@@ -270,12 +270,13 @@ function M.new(world)
   }
 
   omsi.duty = {
-    start = function(line, tour)
-      g.calls[#g.calls + 1] = "duty.start " .. line .. "/" .. tour
+    start = function(line, tour, trip)
+      g.calls[#g.calls + 1] = "duty.start " .. line .. "/" .. tour .. (trip and ("#" .. trip) or "")
       if g.duty_fails then return false, g.duty_fails end
-      g.duty = { line = line, tour = tour }
+      g.duty = { line = line, tour = tour, trip = trip or 1 }
       return true
     end,
+    get = function() return g.duty end,
     finish = function() g.calls[#g.calls + 1] = "duty.finish"; g.duty = nil; return true end,
   }
 
@@ -286,11 +287,27 @@ function M.new(world)
       place = function(file, opts)
         g.calls[#g.calls + 1] = "fleet.place " .. file
         g.place_request = { file = file, opts = opts }
+        g.livery = opts and opts.paint or nil
         g.placing = true
         return true
       end,
       assign = function(line, tour, file, opts)
-        g.assigned[line .. "/" .. tour] = { file = file, number = opts and opts.number }
+        g.assigned[line .. "/" .. tour] = { file = file, number = opts and opts.number, paint = opts and opts.paint }
+        return true
+      end,
+      liveries = function(file)
+        local l = g.liveries and g.liveries[file]
+        local out = {}
+        for _, n in ipairs(l or {}) do out[#out + 1] = n end
+        return out
+      end,
+      livery = function() return g.livery end,
+      repaint = function(name)
+        if g.placing then return false, "a vehicle is still loading" end
+        g.calls[#g.calls + 1] = "fleet.repaint " .. tostring(name)
+        g.livery = name
+        g.placing = true
+        g.repaint_request = name
         return true
       end,
       unassign = function(line, tour) local had = g.assigned[line .. "/" .. tour] ~= nil; g.assigned[line .. "/" .. tour] = nil; return had end,

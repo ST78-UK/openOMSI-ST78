@@ -41,6 +41,8 @@ pub struct Game {
     /// The installed vehicles (`omsi.fleet.catalog`), a vehicle being placed, and the tours
     /// with a vehicle of their own: (line, tour, file, number).
     pub fleet: Vec<FleetVehicle>,
+    /// The livery the driven vehicle wears (`omsi.fleet.livery`).
+    pub livery: Option<String>,
     pub placing: bool,
     pub company: Vec<(String, String, String, String)>,
 }
@@ -281,6 +283,26 @@ impl PluginIo for Game {
     }
     fn fleet_busy(&self) -> bool {
         self.placing
+    }
+    fn fleet_liveries(&mut self, file: &str) -> Vec<String> {
+        if file.contains("O305") { vec!["Blue".into(), "Red".into()] } else { Vec::new() }
+    }
+    fn fleet_livery(&self) -> Option<String> {
+        self.livery.clone()
+    }
+    fn fleet_repaint(&mut self, paint: Option<&str>) -> Result<(), String> {
+        if self.placing {
+            return Err("a vehicle is still loading".into());
+        }
+        if let Some(p) = paint {
+            if p != "Blue" && p != "Red" {
+                return Err(format!("no livery {p}"));
+            }
+        }
+        self.placing = true;
+        self.livery = paint.map(str::to_string);
+        self.did(format!("repaint {}", paint.unwrap_or("-")));
+        Ok(())
     }
     fn fleet_assign(&mut self, line: &str, tour: &str, file: &str, number: &str, _paint: Option<&str>) -> Result<(), String> {
         if line != "136" {

@@ -101,6 +101,7 @@ function R.schedule(line, tour)
     end
   end
   table.sort(trips, function(a, b) return a.start < b.start end)
+  for i, t in ipairs(trips) do t.idx = i end
   cache.sched[key] = trips
   return trips
 end
@@ -130,7 +131,7 @@ end
 
 --- Puts a bus (and a driver) on a tour. mode is "ai" or "player".
 --- Returns the assignment, or false and the reason.
-function R.assign(S, tour, bus, driver, mode, now_info)
+function R.assign(S, tour, bus, driver, mode, now_info, auto)
   if S.bankrupt then return false, "The company is insolvent" end
   if R.get(S, tour.key) then return false, "That tour is already operated" end
   if bus.assignment then return false, "That bus is already on a route" end
@@ -150,6 +151,8 @@ function R.assign(S, tour, bus, driver, mode, now_info)
     since_day = now_info.day_idx, since_time = now_info.time,
     shift_hours = sum.shift_hours,
     settled = {},
+    taken = {},   -- trips the player drove instead of the AI: trip number -> day index
+    auto = auto and true or nil,
     stats = { trips = 0, revenue = 0, costs = 0, ontime = 0, late = 0, missed = 0 },
     today = { trips = 0, revenue = 0, costs = 0 },
     week = {},   -- net per recent day
@@ -171,6 +174,112 @@ function R.unassign(S, a)
   U.remove_if(S.assignments, function(x) return x == a end)
 end
 
+--- Changes the bus and/or the driver of an assignment. `bus` and `driver` are the new ones
+--- (nil keeps the present one). Returns true, or false and the reason.
+function R.reassign(S, a, bus, driver)
+  local old_bus = U.find(S.fleet, function(b) return b.id == a.bus end)
+  local old_driver = a.driver and U.find(S.drivers, function(d) return d.id == a.driver end) or nil
+  bus = bus or old_bus
+  if not bus then return false, "Choose a bus" end
+  if bus ~= old_bus then
+    if bus.assignment then return false, "That bus is already on a route" end
+    if bus.status == "workshop" then return false, "That bus is in the workshop" end
+  end
+  if a.mode == "ai" then
+    driver = driver or old_driver
+    if not driver then return false, "Choose a driver" end
+    if driver ~= old_driver and driver.assignment then return false, "That driver already has a route" end
+  else
+    driver = nil
+  end
+  if bus ~= old_bus then
+    if old_bus then old_bus.assignment = nil end
+    bus.assignment = a.key
+    a.bus = bus.id
+  end
+  if driver ~= old_driver then
+    if old_driver then old_driver.assignment = nil end
+    if driver then driver.assignment = a.key end
+    a.driver = driver and driver.id or nil
+  end
+  a.auto = nil     -- chosen by hand now: the automatic allocation leaves it alone
+  return true
+end
+
+--- Hands an assignment from the AI to the player (`"player"`) or back (`"ai"`, with a driver).
+function R.set_mode(S, a, mode, driver)
+  if mode == a.mode then return true end
+  if mode == "player" then
+    local d = a.driver and U.find(S.drivers, function(x) return x.id == a.driver end)
+    if d then d.assignment = nil end
+    a.driver, a.mode = nil, "player"
+  else
+    if not driver then return false, "Choose a driver" end
+    if driver.assignment then return false, "That driver already has a route" end
+    driver.assignment = a.key
+    a.driver, a.mode = driver.id, "ai"
+  end
+  a.auto = nil
+  return true
+end
+
+--- Whether the player may take a duty in the bus of this assignment today: a tour of their
+--- own, or one of the AI's from which they have taken a trip over.
+function R.player_can(a, day_idx)
+  if a.mode == "player" then return true end
+  for _, d in pairs(a.taken or {}) do
+    if d == day_idx then return true end
+  end
+  return false
+end
+
+--- The player drives trip `n` of an AI-run tour: the AI model leaves it out today.
+function R.take_trip(a, n, day_idx)
+  a.taken = a.taken or {}
+  a.taken[tostring(n)] = day_idx
+  a.settled = a.settled or {}
+  a.settled[tostring(n)] = day_idx
+end
+
+--- Who runs what when the company allocates its AI drivers by itself: the busiest and
+--- longest tours get the biggest buses and the best drivers. `tours` is a list of
+--- { key, line, tour }, `buses` and `drivers` the free ones. Pure: returns the pairs
+--- { tour, bus, driver } for as many tours as there are buses and drivers for, and the
+--- tours left without.
+function R.plan_allocation(tours, buses, drivers)
+  local scored = {}
+  for _, t in ipairs(tours) do
+    local sum = R.summary(t.line, t.tour)
+    scored[#scored + 1] = { tour = t, score = sum.km * R.line_demand(t.line), key = t.key }
+  end
+  table.sort(scored, function(a, b)
+    if a.score ~= b.score then return a.score > b.score end
+    return a.key < b.key
+  end)
+  local bs = {}
+  for _, b in ipairs(buses) do bs[#bs + 1] = b end
+  table.sort(bs, function(a, b)
+    if a.spec.capacity ~= b.spec.capacity then return a.spec.capacity > b.spec.capacity end
+    if a.condition ~= b.condition then return a.condition > b.condition end
+    return a.id < b.id
+  end)
+  local ds = {}
+  for _, d in ipairs(drivers) do ds[#ds + 1] = d end
+  table.sort(ds, function(a, b)
+    if a.skill ~= b.skill then return a.skill > b.skill end
+    return a.id < b.id
+  end)
+  local pairs_, left = {}, {}
+  for i, sc in ipairs(scored) do
+    if bs[i] and ds[i] then
+      pairs_[#pairs_ + 1] = { tour = sc.tour, bus = bs[i], driver = ds[i] }
+    else
+      left[#left + 1] = sc.tour
+    end
+  end
+  return pairs_, left
+end
+
 -- ---------------------------------------------------------------------------------------
 -- Which trips are due
 -- ---------------------------------------------------------------------------------------
@@ -181,9 +290,10 @@ function R.due_trips(a, trips, day_idx, now, jumped)
   local due = {}
   for _, t in ipairs(trips) do
     local id = tostring(t.n)
+    local taken = a.taken and a.taken[id] == day_idx
     if a.settled[id] ~= day_idx and t.finish <= now then
       a.settled[id] = day_idx
-      local counts = day_idx > a.since_day or t.start >= a.since_time
+      local counts = not taken and (day_idx > a.since_day or t.start >= a.since_time)
       if counts and not jumped then due[#due + 1] = t end
     end
   end
@@ -193,6 +303,7 @@ end
 --- A day's end for the assignment's per-trip memory.
 function R.new_day(a)
   a.settled = {}
+  a.taken = {}
   U.push(a.week, U.round(a.today.revenue - a.today.costs, 0), 7)
   a.today = { trips = 0, revenue = 0, costs = 0 }
 end

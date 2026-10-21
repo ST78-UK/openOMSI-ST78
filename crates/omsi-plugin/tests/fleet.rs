@@ -85,3 +85,37 @@ fn a_tour_gets_a_vehicle_and_gives_it_back() {
     );
     assert_eq!(out, ["ok"], "{out:?}");
 }
+
+#[test]
+fn liveries_are_listed_and_the_driven_bus_can_be_repainted() {
+    let mut g = game();
+    let out = check(
+        "fleet-repaint",
+        r#"
+        local l = omsi.fleet.liveries("Vehicles/MB_O305/MB_O305.bus")
+        assert(#l == 2 and l[1] == "Blue" and l[2] == "Red", "two liveries")
+        assert(#omsi.fleet.liveries("Vehicles/Nothing/Nothing.bus") == 0)
+        assert(omsi.fleet.livery() == nil, "original paint")
+        local bad, why = omsi.fleet.repaint("Green")
+        assert(bad == false and why:find("no livery"), tostring(why))
+        assert(omsi.fleet.repaint("Red") == true)
+        assert(omsi.fleet.livery() == "Red")
+        assert(omsi.fleet.busy() == true)
+        local again, why2 = omsi.fleet.repaint("Blue")
+        assert(again == false and why2:find("still loading"), tostring(why2))
+        omsi.message("ok")
+        "#,
+        &mut g,
+    );
+    assert_eq!(out, ["ok"], "{out:?}");
+    assert_eq!(*g.log.borrow(), ["repaint Red"]);
+}
+
+#[test]
+fn an_empty_livery_means_the_models_own_textures() {
+    let mut g = game();
+    g.livery = Some("Red".into());
+    let out = check("fleet-original", r#"assert(omsi.fleet.repaint("") == true); assert(omsi.fleet.livery() == nil); omsi.message("ok")"#, &mut g);
+    assert_eq!(out, ["ok"], "{out:?}");
+    assert_eq!(*g.log.borrow(), ["repaint -"]);
+}

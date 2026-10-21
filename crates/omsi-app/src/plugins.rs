@@ -743,6 +743,39 @@ impl PluginIo for Io<'_> {
     fn fleet_busy(&self) -> bool {
         self.app().is_some_and(|a| a.menus.pending_placement.is_some())
     }
+    fn fleet_liveries(&mut self, file: &str) -> Vec<String> {
+        let Some(app) = self.app_mut() else { return Vec::new() };
+        crate::game_lists::bus_liveries(app, file)
+    }
+    fn fleet_livery(&self) -> Option<String> {
+        let p = self.app()?.player.as_ref()?;
+        p.vehicle.host.paint_scheme.flatten().and_then(|i| p.vehicle.ty.paint_schemes.get(i)).map(|s| s.name.clone())
+    }
+    fn fleet_repaint(&mut self, paint: Option<&str>) -> Result<(), String> {
+        let app = self.app_mut().ok_or("no game")?;
+        if app.player.is_none() {
+            return Err("there is no vehicle to repaint: you are on foot".into());
+        }
+        if app.menus.pending_placement.is_some() {
+            return Err("a vehicle is still loading".into());
+        }
+        if app.net.lan.as_ref().is_some_and(|l| l.role == omsi_net::Role::Client) {
+            return Err("in a LAN session only the host changes vehicles".into());
+        }
+        if let Some(wanted) = paint {
+            let known = app.player.as_ref().is_some_and(|pl| pl.vehicle.ty.paint_schemes.iter().any(|s| s.name.eq_ignore_ascii_case(wanted)));
+            if !known {
+                return Err(format!("this vehicle has no livery {wanted} (see omsi.fleet.liveries)"));
+            }
+        }
+        app.reread_driven_vehicle(Some(paint.map(str::to_string)));
+        if app.menus.pending_placement.is_some() {
+            Ok(())
+        } else {
+            app.menus.swap_pending = false;
+            Err("the game could not start loading the vehicle".into())
+        }
+    }
     fn fleet_assign(&mut self, line: &str, tour: &str, file: &str, number: &str, paint: Option<&str>) -> Result<(), String> {
         let app = self.app_mut().ok_or("no game")?;
         app.ensure_vehicle_list();
